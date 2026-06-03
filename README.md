@@ -23,7 +23,7 @@ A handy Chrome extension to browse all clips from a [Kick.com](https://kick.com)
 1. Open `chrome://extensions/` in your browser.
 2. In the top-right corner, enable **Developer mode**.
 3. Click **Load unpacked**.
-4. Select the `KickClips` folder on your computer.
+4. Select the `KickClipsViewer` folder on your computer.
 
 ---
 
