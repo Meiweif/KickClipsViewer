@@ -1,0 +1,144 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  width: 320px;
+  background: #0b0e0f;
+  color: #efeff1;
+  font-family: "Inter", "Segoe UI", Roboto, Arial, sans-serif;
+  font-size: 13px;
+}
+
+.popup {
+  padding: 16px;
+}
+
+.popup-header h1 {
+  margin: 0;
+  font-size: 18px;
+  color: #53FC18;
+}
+
+.popup-header p {
+  margin: 4px 0 0;
+  color: #adb1b8;
+}
+
+.section {
+  margin-top: 16px;
+}
+
+label {
+  display: block;
+  margin-bottom: 6px;
+  color: #adb1b8;
+}
+
+input {
+  width: 100%;
+  background: #111214;
+  border: 1px solid #3a3a3d;
+  color: #efeff1;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+input:focus {
+  outline: none;
+  border-color: #53FC18;
+  box-shadow: 0 0 0 1px #53FC18;
+}
+
+.btn {
+  width: 100%;
+  margin-top: 10px;
+  appearance: none;
+  border: 1px solid #3a3a3d;
+  background: #191919;
+  color: #efeff1;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: #202020;
+}
+
+.btn-primary {
+  background: #53FC18;
+  border-color: #53FC18;
+  color: #0b0e0f;
+  font-weight: 600;
+}
+
+.btn-primary:hover {
+  background: #3dd014;
+  border-color: #3dd014;
+}
+
+.language-section {
+  margin-top: 12px;
+}
+
+.language-label {
+  margin: 0 0 8px;
+  color: #adb1b8;
+}
+
+.language-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lang-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #3a3a3d;
+  border-radius: 6px;
+  background: #111214;
+  color: #efeff1;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.lang-btn:hover {
+  background: #191919;
+  border-color: #53535f;
+}
+
+.lang-btn.selected {
+  border-color: #53FC18;
+  box-shadow: 0 0 0 1px #53FC18;
+}
+
+.lang-flag {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.hint {
+  margin: 0;
+  color: #adb1b8;
+  line-height: 1.4;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.error {
+  margin: 8px 0 0;
+  color: #ffb4b4;
+}

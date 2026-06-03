@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+  <meta charset="UTF-8">
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>KickClips</title>
+
+  <link rel="stylesheet" href="popup.css">
+
+</head>
+
+<body>
+
+  <main class="popup">
+
+    <header class="popup-header">
+
+      <h1 id="popup-title">KickClips</h1>
+
+      <p id="popup-subtitle">Browse all clips from a Kick channel</p>
+
+    </header>
+
+
+
+    <section class="section">
+
+      <label id="channel-label" for="channel-input">Channel name</label>
+
+      <input
+
+        id="channel-input"
+
+        type="text"
+
+        placeholder="e.g. xqc"
+
+        autocomplete="off"
+
+        spellcheck="false"
+
+      >
+
+      <button id="open-clips-btn" class="btn btn-primary" type="button">Open clips</button>
+
+      <p id="channel-error" class="error hidden"></p>
+
+    </section>
+
+
+
+    <section class="section">
+
+      <p id="popup-hint" class="hint">
+
+        Opens an extension page with the full clip list, search, sorting, and player.
+
+      </p>
+
+    </section>
+
+  </main>
+
+
+
+  <script src="popup.js" type="module"></script>
+
+</body>
+
+</html>

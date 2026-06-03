@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "KickClips",
+  "version": "1.0.0",
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; img-src 'self' https: data:; media-src 'self' https: blob:;"
+  },
+  "description": "Browse all clips from a Kick channel with pagination and sorting",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png"
+    },
+    "default_title": "KickClips"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://kick.com/*",
+    "https://clips.kick.com/*",
+    "https://files.kick.com/*",
+    "https://stream.kick.com/*",
+    "https://*.live-video.net/*",
+    "https://*.cloudfront.net/*"
+  ]
+}
