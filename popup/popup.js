@@ -1,10 +1,15 @@
 import { t } from '../lib/i18n.js';
+import { checkChannelOnKick } from '../lib/validate-channel.js';
+import {
+  normalizeChannel,
+  applyChannelInputSanitize,
+  applyChannelPaste,
+  finalizeChannelInput
+} from '../lib/channel-input.js';
 
 const channelInput = document.getElementById('channel-input');
 const openClipsBtn = document.getElementById('open-clips-btn');
 const channelError = document.getElementById('channel-error');
-
-const CHANNEL_INPUT_PATTERN = /[^a-zA-Z0-9_]/g;
 
 function showChannelError(message) {
   channelError.textContent = message;
@@ -13,17 +18,6 @@ function showChannelError(message) {
 
 function hideChannelError() {
   channelError.classList.add('hidden');
-}
-
-function normalizeChannel(value) {
-  return value.trim().replace(/^@/, '').toLowerCase();
-}
-
-function sanitizeChannelInput(input) {
-  const filtered = input.value.replace(CHANNEL_INPUT_PATTERN, '');
-  if (filtered !== input.value) {
-    input.value = filtered;
-  }
 }
 
 function openTrackingPage(channel) {
@@ -50,12 +44,42 @@ openClipsBtn.addEventListener('click', async () => {
     return;
   }
 
-  await chrome.storage.local.set({ lastChannel: channel });
-  openTrackingPage(channel);
+  openClipsBtn.disabled = true;
+  showChannelError(t('channelValidating'));
+
+  try {
+    const response = await checkChannelOnKick(channel);
+
+    if (!response?.ok) {
+      showChannelError(response?.error || t('channelNotFound', { channel }));
+      channelInput.focus();
+      return;
+    }
+
+    hideChannelError();
+    await chrome.storage.local.set({ lastChannel: channel });
+    openTrackingPage(channel);
+  } finally {
+    openClipsBtn.disabled = false;
+  }
+});
+
+channelInput.addEventListener('paste', (event) => {
+  const text = event.clipboardData?.getData('text') || '';
+
+  if (applyChannelPaste(channelInput, text)) {
+    event.preventDefault();
+    hideChannelError();
+  }
 });
 
 channelInput.addEventListener('input', () => {
-  sanitizeChannelInput(channelInput);
+  applyChannelInputSanitize(channelInput);
+  hideChannelError();
+});
+
+channelInput.addEventListener('blur', () => {
+  finalizeChannelInput(channelInput);
 });
 
 channelInput.addEventListener('keydown', (event) => {

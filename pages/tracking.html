@@ -30,9 +30,10 @@
 
     <section id="content-panel" class="content-panel hidden">
       <div id="loading-banner" class="loading-banner hidden">
-        <div class="loader loader-small"></div>
+        <div id="loading-banner-spinner" class="loader loader-small"></div>
         <span id="loading-banner-text">Loading remaining clips...</span>
         <button id="cancel-load-btn" class="btn loading-banner-cancel" type="button">Cancel</button>
+        <button id="resume-load-btn" class="btn loading-banner-resume hidden" type="button">Resume loading clips from platform</button>
       </div>
 
       <div class="pagination-bar">
@@ -55,10 +56,22 @@
             <span class="custom-select-arrow" aria-hidden="true"></span>
           </button>
           <ul class="custom-select-menu hidden" role="listbox">
-            <li class="custom-select-option selected" role="option" data-value="oldest">Oldest first</li>
-            <li class="custom-select-option" role="option" data-value="newest">Newest first</li>
-            <li class="custom-select-option" role="option" data-value="popular">Most popular</li>
-            <li class="custom-select-option" role="option" data-value="unpopular">Least views</li>
+            <li class="custom-select-option selected" role="option" data-value="oldest" aria-selected="true">
+              <span class="custom-select-option-label">Oldest first</span>
+              <span class="custom-select-check" aria-hidden="true"></span>
+            </li>
+            <li class="custom-select-option" role="option" data-value="newest" aria-selected="false">
+              <span class="custom-select-option-label">Newest first</span>
+              <span class="custom-select-check" aria-hidden="true"></span>
+            </li>
+            <li class="custom-select-option" role="option" data-value="popular" aria-selected="false">
+              <span class="custom-select-option-label">Most popular</span>
+              <span class="custom-select-check" aria-hidden="true"></span>
+            </li>
+            <li class="custom-select-option" role="option" data-value="unpopular" aria-selected="false">
+              <span class="custom-select-option-label">Least views</span>
+              <span class="custom-select-check" aria-hidden="true"></span>
+            </li>
           </ul>
         </div>
       </div>
@@ -100,6 +113,7 @@
       <h2 id="channel-modal-title">Change channel</h2>
       <label id="channel-modal-label" for="channel-modal-input">Channel name</label>
       <input id="channel-modal-input" type="text" placeholder="e.g. shroud" autocomplete="off" spellcheck="false">
+      <p id="channel-modal-error" class="channel-modal-error hidden"></p>
       <div class="modal-actions">
         <button id="channel-modal-cancel" class="btn" type="button">Cancel</button>
         <button id="channel-modal-submit" class="btn btn-secondary" type="button">Open</button>
