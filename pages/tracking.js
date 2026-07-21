@@ -2,22 +2,39 @@ import {
   sortClips,
   filterClips,
   clipNeedsCreatorEnrichment,
-  getClipStorageKey
+  getClipStorageKey,
+  CLIPS_PAGE_LIMIT
 } from '../lib/kick-api.js';
 import { loadAllClips, isReliableClipsTotal } from '../lib/clip-loader.js';
 import { VERIFIED_BADGE_URL, downloadHlsAsBlob } from '../lib/clip-player.js';
 import { getCreatorStats, formatLongDate, getClipThumbUrl } from '../lib/creator-stats.js';
-import { t, LOCALE } from '../lib/i18n.js';
+import { t, getLocale, getLanguage, loadLanguage, setLanguage, pluralizeClips } from '../lib/i18n.js';
+import { checkChannelOnKick } from '../lib/validate-channel.js';
+import {
+  normalizeChannel,
+  applyChannelInputSanitize,
+  applyChannelPaste,
+  finalizeChannelInput
+} from '../lib/channel-input.js';
 
 const PAGE_SIZE = 100;
-const CHANNEL_INPUT_PATTERN = /[^a-zA-Z0-9_]/g;
 const LOAD_CANCELLED = 'LOAD_CANCELLED';
 let hlsInstance = null;
 
-const dateLocale = LOCALE;
-
 function tr(key, vars = {}) {
   return t(key, vars);
+}
+
+function trackAnalytics(event, amount = 1) {
+  chrome.runtime.sendMessage({ type: 'ANALYTICS_TRACK', event, amount }).catch(() => {});
+}
+
+function trackChannelAnalytics(channel) {
+  if (!channel) {
+    return;
+  }
+
+  chrome.runtime.sendMessage({ type: 'ANALYTICS_TRACK_CHANNEL', channel }).catch(() => {});
 }
 
 const SORT_KEYS = {
@@ -28,7 +45,7 @@ const SORT_KEYS = {
 };
 
 const params = new URLSearchParams(window.location.search);
-let channel = (params.get('channel') || '').trim();
+let channel = normalizeChannel(params.get('channel') || '');
 
 const pageTitle = document.getElementById('page-title');
 const channelSubtitle = document.getElementById('channel-subtitle');
@@ -38,8 +55,10 @@ const statusText = document.getElementById('status-text');
 const statusSubtext = document.getElementById('status-subtext');
 const contentPanel = document.getElementById('content-panel');
 const loadingBanner = document.getElementById('loading-banner');
+const loadingBannerSpinner = document.getElementById('loading-banner-spinner');
 const loadingBannerText = document.getElementById('loading-banner-text');
 const cancelLoadBtn = document.getElementById('cancel-load-btn');
+const resumeLoadBtn = document.getElementById('resume-load-btn');
 const errorPanel = document.getElementById('error-panel');
 const errorText = document.getElementById('error-text');
 const clipsBody = document.getElementById('clips-body');
@@ -54,12 +73,19 @@ const sortValue = sortSelect.querySelector('.custom-select-value');
 const sortMenu = sortSelect.querySelector('.custom-select-menu');
 const sortOptions = sortSelect.querySelectorAll('.custom-select-option');
 const refreshBtn = document.getElementById('refresh-btn');
-const changeChannelBtn = document.getElementById('change-channel-btn');
+const settingsBtn = document.getElementById('settings-btn');
 const openSettingsBtn = document.getElementById('open-settings-btn');
+const settingsModal = document.getElementById('settings-modal');
+const settingsModalClose = document.getElementById('settings-modal-close');
+const settingsChangeChannelBtn = document.getElementById('settings-change-channel-btn');
+const settingsLangButtons = document.querySelectorAll('#settings-modal .lang-btn');
+const settingsAnalyticsToggle = document.getElementById('settings-analytics-toggle');
+const settingsLearnMoreBtn = document.getElementById('settings-learn-more');
 const channelModal = document.getElementById('channel-modal');
 const channelModalInput = document.getElementById('channel-modal-input');
 const channelModalCancel = document.getElementById('channel-modal-cancel');
 const channelModalSubmit = document.getElementById('channel-modal-submit');
+const channelModalError = document.getElementById('channel-modal-error');
 const clipModal = document.getElementById('clip-modal');
 const clipModalTitle = document.getElementById('clip-modal-title');
 const clipModalClose = document.getElementById('clip-modal-close');
@@ -117,9 +143,74 @@ const state = {
   clipModalOpen: false,
   tableRenderPending: false,
   creatorClipIndex: new Map(),
-  creatorIndexTimer: null
+  creatorIndexTimer: null,
+  clipsDataVersion: 0,
+  filtersCacheVersion: -1,
+  filtersCacheSort: '',
+  filtersCacheSearch: '',
+  loadCanResume: false,
+  resumeCursor: null,
+  pageNavScheduled: false,
+  loadPaused: false,
+  clipKeyIndex: new Map(),
+  heavyWorkInProgress: false,
+  deferredRefreshHandle: null
 
 };
+
+function touchClipsData() {
+  state.clipsDataVersion += 1;
+}
+
+function clearLoadProgressTimers() {
+  if (state.tableRenderTimer) {
+    clearTimeout(state.tableRenderTimer);
+    state.tableRenderTimer = null;
+  }
+
+  if (state.creatorIndexTimer) {
+    clearTimeout(state.creatorIndexTimer);
+    state.creatorIndexTimer = null;
+  }
+
+  if (state.deferredRefreshHandle != null) {
+    if (typeof cancelIdleCallback === 'function') {
+      cancelIdleCallback(state.deferredRefreshHandle);
+    } else {
+      clearTimeout(state.deferredRefreshHandle);
+    }
+    state.deferredRefreshHandle = null;
+  }
+}
+
+function rebuildClipKeyIndex() {
+  const index = new Map();
+
+  state.allClips.forEach((clip, clipIndex) => {
+    index.set(getClipStorageKey(clip), clipIndex);
+  });
+
+  state.clipKeyIndex = index;
+}
+
+function replaceAllClips(clips) {
+  state.allClips = clips;
+  rebuildClipKeyIndex();
+  touchClipsData();
+}
+
+function shouldWarnBeforeUnload() {
+  return state.loading || state.loadCanResume || state.allClips.length > 0;
+}
+
+window.addEventListener('beforeunload', (event) => {
+  if (!shouldWarnBeforeUnload()) {
+    return;
+  }
+
+  event.preventDefault();
+  event.returnValue = tr('leavePageConfirm');
+});
 
 function getProfileKey(clip) {
   if (clip.creator_id && clip.creator_slug) {
@@ -193,10 +284,6 @@ function syncProfilesFromClips(clips) {
   }
 }
 
-function normalizeChannel(value) {
-  return value.trim().replace(/^@/, '').toLowerCase();
-}
-
 function showStatus(message, subtext = '') {
   statusPanel.classList.remove('hidden');
   contentPanel.classList.add('hidden');
@@ -226,12 +313,28 @@ function showContent() {
 }
 
 function showLoadingBanner(message) {
-  loadingBannerText.textContent = message;
-  loadingBanner.classList.remove('hidden');
+  showActiveLoadBanner(message);
 }
 
 function hideLoadingBanner() {
   loadingBanner.classList.add('hidden');
+}
+
+function showActiveLoadBanner(message) {
+  loadingBannerSpinner.classList.remove('hidden');
+  cancelLoadBtn.classList.remove('hidden');
+  resumeLoadBtn.classList.add('hidden');
+  loadingBannerText.textContent = message;
+  loadingBanner.classList.remove('hidden');
+}
+
+function showPausedLoadBanner() {
+  const loaded = getLoadedClipsCount();
+  loadingBannerSpinner.classList.add('hidden');
+  cancelLoadBtn.classList.add('hidden');
+  resumeLoadBtn.classList.remove('hidden');
+  loadingBannerText.textContent = tr('loadPaused', { loaded: formatViews(loaded) });
+  loadingBanner.classList.remove('hidden');
 }
 
 const TABLE_RENDER_INTERVAL_MS = 600;
@@ -256,11 +359,12 @@ function setClipsTotalExpected(total, lock = false) {
 
 function getProgressExpectedCount(loaded) {
   const hint = state.broadcaster?.clipsCount;
-  if (state.loading) {
-    if (hint && isReliableClipsTotal(hint, loaded)) {
+
+  if (state.loading || state.loadCanResume) {
+    if (hint && hint > loaded) {
       return Math.max(hint, state.clipsTotalExpected || 0, loaded);
     }
-    return Math.max(state.clipsTotalExpected || 0, loaded + PAGE_SIZE);
+    return Math.max(state.clipsTotalExpected || 0, loaded + CLIPS_PAGE_LIMIT);
   }
 
   return state.allClips.length;
@@ -315,14 +419,54 @@ function rebuildCreatorClipIndex() {
 }
 
 function scheduleCreatorIndexRebuild() {
+  if (state.loadPaused || state.allClips.length > 8000) {
+    return;
+  }
+
+  if (state.loading && state.allClips.length > 3000) {
+    return;
+  }
+
   if (state.creatorIndexTimer) {
     clearTimeout(state.creatorIndexTimer);
   }
 
+  const delay = state.allClips.length > 3000 ? 3000 : 500;
+
   state.creatorIndexTimer = setTimeout(() => {
     state.creatorIndexTimer = null;
+
+    if (state.loadPaused || state.allClips.length > 8000) {
+      return;
+    }
+
     rebuildCreatorClipIndex();
-  }, 250);
+  }, delay);
+}
+
+function scheduleDeferredTableRefresh() {
+  if (state.deferredRefreshHandle != null) {
+    cancelIdleCallback(state.deferredRefreshHandle);
+  }
+
+  const runRefresh = () => {
+    state.deferredRefreshHandle = null;
+    state.heavyWorkInProgress = true;
+
+    try {
+      applyFilters();
+      renderTable({ paginationOnly: true, skipProfiles: true });
+      updateBroadcasterInfo(getLoadedClipsCount());
+    } finally {
+      state.heavyWorkInProgress = false;
+    }
+  };
+
+  if (typeof requestIdleCallback === 'function') {
+    state.deferredRefreshHandle = requestIdleCallback(runRefresh, { timeout: 800 });
+  } else {
+    state.deferredRefreshHandle = setTimeout(runRefresh, 0);
+  }
 }
 
 function getIndexedCreatorClips(creatorId, creatorSlug, creatorName) {
@@ -336,14 +480,14 @@ function getIndexedCreatorClips(creatorId, creatorSlug, creatorName) {
     || null;
 }
 
-function safeRenderTable() {
+function safeRenderTable(options = {}) {
   if (state.clipModalOpen) {
     state.tableRenderPending = true;
     return;
   }
 
   state.tableRenderPending = false;
-  renderTable();
+  renderTable(options);
 }
 
 function buildIdToLoginMap(clips) {
@@ -362,7 +506,7 @@ function getLoadingBannerText() {
   const loaded = getLoadedClipsCount();
   const expected = getProgressExpectedCount(loaded);
 
-  if (state.loading && expected > loaded) {
+  if ((state.loading || state.loadCanResume) && expected > loaded) {
     return tr('loadingRestProgress', {
       loaded: formatViews(loaded),
       expected: formatViews(expected)
@@ -373,8 +517,22 @@ function getLoadingBannerText() {
 }
 
 function updateLoadProgressUi() {
-  applyFilters();
+  if (state.loadPaused) {
+    return;
+  }
+
   const loaded = getLoadedClipsCount();
+
+  if (state.allClips.length > 5000) {
+    const approxTotal = Math.max(loaded, state.filteredClips.length);
+    const totalPages = Math.max(1, Math.ceil(approxTotal / PAGE_SIZE));
+    updateBroadcasterInfo(loaded);
+    updatePaginationControls(approxTotal, totalPages);
+    showLoadingBanner(getLoadingBannerText());
+    return;
+  }
+
+  applyFilters();
   const total = state.filteredClips.length;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   updateBroadcasterInfo(loaded);
@@ -383,12 +541,16 @@ function updateLoadProgressUi() {
 }
 
 function scheduleTableUpdateDuringLoad(progress) {
+  if (state.loadPaused) {
+    return;
+  }
+
   if (progress.loaded != null) {
     state.clipsLoadedCount = progress.loaded;
   }
 
   if (progress.clips) {
-    state.allClips = progress.clips;
+    replaceAllClips(progress.clips);
     state.clipsLoadedCount = progress.clips.length;
     scheduleCreatorIndexRebuild();
   } else if (progress.newClips?.length) {
@@ -407,7 +569,7 @@ function scheduleTableUpdateDuringLoad(progress) {
     if (progress.phase === 'partial') {
       showContent();
       showLoadingBanner(getLoadingBannerText());
-      renderTable();
+      renderTable({ paginationOnly: state.allClips.length > 3000, skipProfiles: state.allClips.length > 3000 });
       return;
     }
 
@@ -447,13 +609,24 @@ function prefetchAllCreatorProfiles() {
   loadUserProfilesBatch(ids.slice(0, 12), logins.slice(0, 12), source);
 }
 
-function formatDate(iso) {
+function formatCreatedAt(iso) {
   const date = new Date(iso);
-  return date.toLocaleDateString(dateLocale, {
+
+  if (Number.isNaN(date.getTime())) {
+    return '—';
+  }
+
+  const datePart = date.toLocaleDateString(getLocale(), {
     day: 'numeric',
     month: 'short',
     year: 'numeric'
   });
+  const timePart = date.toLocaleTimeString(getLocale(), {
+    hour: 'numeric',
+    minute: '2-digit'
+  });
+
+  return `<span class="clip-created"><span class="clip-created-date">${escapeHtml(datePart)}</span><span class="clip-created-time">${escapeHtml(timePart)}</span></span>`;
 }
 
 function formatDuration(seconds) {
@@ -466,36 +639,47 @@ function formatDuration(seconds) {
 }
 
 function formatViews(count) {
-  return new Intl.NumberFormat(dateLocale).format(count);
+  return new Intl.NumberFormat(getLocale()).format(count);
 }
 
 function mergeLoadedClips(newClips) {
-  if (!newClips?.length) {
+  if (!newClips?.length || state.loadPaused) {
     return;
   }
 
-  const keyIndex = new Map(
-    state.allClips.map((clip, index) => [getClipStorageKey(clip), index])
-  );
-
   for (const clip of newClips) {
     const key = getClipStorageKey(clip);
-    const existingIndex = keyIndex.get(key);
+    const existingIndex = state.clipKeyIndex.get(key);
 
     if (existingIndex != null) {
       state.allClips[existingIndex] = clip;
     } else {
-      keyIndex.set(key, state.allClips.length);
+      state.clipKeyIndex.set(key, state.allClips.length);
       state.allClips.push(clip);
     }
   }
 
   state.clipsLoadedCount = state.allClips.length;
+  touchClipsData();
+}
+
+function filtersNeedRefresh() {
+  return state.filtersCacheVersion !== state.clipsDataVersion
+    || state.filtersCacheSort !== state.sort
+    || state.filtersCacheSearch !== state.search
+    || (!state.search.trim() && state.filteredClips.length !== state.allClips.length);
 }
 
 function applyFilters() {
-  const base = sortClips(state.allClips, state.sort);
-  state.filteredClips = filterClips(base, state.search);
+  const cacheHit = !filtersNeedRefresh();
+
+  if (!cacheHit) {
+    const base = sortClips(state.allClips, state.sort);
+    state.filteredClips = filterClips(base, state.search);
+    state.filtersCacheVersion = state.clipsDataVersion;
+    state.filtersCacheSort = state.sort;
+    state.filtersCacheSearch = state.search;
+  }
 
   const totalPages = Math.max(1, Math.ceil(state.filteredClips.length / PAGE_SIZE));
   if (state.currentPage > totalPages) {
@@ -506,7 +690,7 @@ function applyFilters() {
 function updatePaginationControls(total, totalPages) {
   const loaded = getLoadedClipsCount();
   const expected = getProgressExpectedCount(loaded);
-  const showProgress = state.loading && expected > loaded;
+  const showProgress = (state.loading || state.loadCanResume) && expected > loaded;
 
   const pageText = showProgress
     ? tr('pageInfoProgress', {
@@ -549,11 +733,6 @@ function renderCreatorCell(clip) {
   const profile = getCreatorProfile(clip);
   const displayName = clip.creator_name || clip.creator_slug || profile?.displayName || '—';
   const isVerified = profile?.isVerified === true || clip.creator_verified === true;
-  const avatar = clip.creator_avatar || profile?.avatar || '';
-
-  const avatarMarkup = avatar
-    ? `<img class="creator-avatar" src="${escapeAttr(avatar)}" alt="" width="28" height="28">`
-    : '<span class="creator-avatar creator-avatar-placeholder" aria-hidden="true"></span>';
 
   const verifyMarkup = isVerified
     ? `<img class="verify-icon" src="${VERIFIED_BADGE_URL}" alt="Verified" width="16" height="16">`
@@ -567,7 +746,6 @@ function renderCreatorCell(clip) {
       data-creator-slug="${escapeAttr(clip.creator_slug || '')}"
       data-creator-name="${escapeAttr(clip.creator_name || clip.creator_slug || '')}"
     >
-      ${avatarMarkup}
       ${verifyMarkup}<span>${escapeHtml(displayName)}</span>
     </button>
   `;
@@ -611,7 +789,7 @@ async function enrichPageClipsCreators(pageClips) {
   ));
 
   if (!need.length) {
-    return;
+    return false;
   }
 
   need.forEach((clip) => {
@@ -619,16 +797,19 @@ async function enrichPageClipsCreators(pageClips) {
   });
 
   await Promise.all(need.slice(0, 12).map((clip) => enrichClipCreator(clip)));
+  return true;
 }
 
-async function refreshUserProfiles(pageClips) {
-  if (state.loading || state.clipModalOpen) {
+async function refreshUserProfiles(pageClips, { allowRerender = true } = {}) {
+  if (state.loading || state.clipModalOpen || state.heavyWorkInProgress || state.loadPaused) {
     return;
   }
 
-  enrichPageClipsCreators(pageClips).then(() => {
-    safeRenderTable();
-  });
+  const changed = await enrichPageClipsCreators(pageClips);
+
+  if (changed && allowRerender) {
+    safeRenderTable({ paginationOnly: true });
+  }
 
   const userIds = [...new Set(pageClips.map((clip) => clip.creator_id).filter(Boolean))];
   const userLogins = [...new Set(
@@ -704,7 +885,7 @@ async function loadUserProfilesBatch(userIds, userLogins = [], sourceClips = [])
 
     if (response?.ok && response.profiles) {
       state.userProfiles = { ...state.userProfiles, ...response.profiles };
-      safeRenderTable();
+      safeRenderTable({ paginationOnly: true });
 
       if (!state.loading && !state.clipModalOpen) {
         const keys = [
@@ -724,7 +905,7 @@ async function loadUserProfilesBatch(userIds, userLogins = [], sourceClips = [])
 }
 
 function queueVerifiedChecks(profileKeys) {
-  if (state.loading || state.clipModalOpen) {
+  if (state.loading || state.clipModalOpen || state.loadPaused) {
     return;
   }
 
@@ -758,7 +939,7 @@ function queueVerifiedChecks(profileKeys) {
             isVerified: response.verified === true,
             verifiedChecked: true
           };
-          safeRenderTable();
+          safeRenderTable({ paginationOnly: true });
           refreshOpenPopoverVerified(profileKey);
         }
       } catch {
@@ -791,7 +972,7 @@ function renderPopoverClipBlock(label, clip) {
           <span class="user-popover-clip-title">${escapeHtml(clip.title || tr('clipUntitled'))}</span>
           <span class="user-popover-clip-info">${tr('viewsOnClip', {
             count: formatViews(clip.view_count),
-            date: formatLongDate(clip.created_at, dateLocale)
+            date: formatLongDate(clip.created_at, getLocale())
           })}</span>
         </div>
       </button>
@@ -914,8 +1095,10 @@ function refreshOpenPopoverVerified(profileKey) {
   userPopoverTitle.innerHTML = `${verifyMarkup}<span>${escapeHtml(displayName)}</span>`;
 }
 
-function renderTable() {
-  applyFilters();
+function renderTable({ paginationOnly = false, skipProfiles = false } = {}) {
+  if (!paginationOnly || filtersNeedRefresh()) {
+    applyFilters();
+  }
 
   const start = (state.currentPage - 1) * PAGE_SIZE;
   const pageClipsPreview = state.filteredClips.slice(start, start + PAGE_SIZE);
@@ -959,7 +1142,7 @@ function renderTable() {
           </a>
         </div>
       </td>
-      <td class="col-date">${formatDate(clip.created_at)}</td>
+      <td class="col-date">${formatCreatedAt(clip.created_at)}</td>
       <td class="col-views">${formatViews(clip.view_count)}</td>
       <td class="col-duration">${formatDuration(clip.duration)}</td>
     `;
@@ -991,11 +1174,10 @@ function renderTable() {
   });
 
   updatePaginationControls(total, totalPages);
-  refreshUserProfiles(pageClips);
-}
 
-function pluralizeClips(count) {
-  return count === 1 ? tr('clipWord1') : tr('clipWord5');
+  if (!skipProfiles) {
+    refreshUserProfiles(pageClips, { allowRerender: false });
+  }
 }
 
 function escapeHtml(text) {
@@ -1018,7 +1200,7 @@ function updateBroadcasterInfo(loadedCount) {
   }
 
   const expected = getProgressExpectedCount(loadedCount);
-  const showProgress = state.loading && expected > loadedCount;
+  const showProgress = (state.loading || state.loadCanResume) && expected > loadedCount;
 
   if (showProgress) {
     channelSubtitle.textContent = tr('channelTotalProgress', {
@@ -1043,7 +1225,14 @@ function updateBroadcasterInfo(loadedCount) {
 }
 
 function goToPage(delta) {
-  applyFilters();
+  if (state.heavyWorkInProgress || state.pageNavScheduled) {
+    return;
+  }
+
+  if (filtersNeedRefresh()) {
+    applyFilters();
+  }
+
   const totalPages = Math.max(1, Math.ceil(state.filteredClips.length / PAGE_SIZE));
   const nextPage = state.currentPage + delta;
 
@@ -1052,7 +1241,12 @@ function goToPage(delta) {
   }
 
   state.currentPage = nextPage;
-  renderTable();
+  state.pageNavScheduled = true;
+
+  requestAnimationFrame(() => {
+    state.pageNavScheduled = false;
+    renderTable({ paginationOnly: true });
+  });
 }
 
 function setSort(value) {
@@ -1061,7 +1255,9 @@ function setSort(value) {
   sortValue.textContent = tr(SORT_KEYS[value]);
 
   sortOptions.forEach((option) => {
-    option.classList.toggle('selected', option.dataset.value === value);
+    const selected = option.dataset.value === value;
+    option.classList.toggle('selected', selected);
+    option.setAttribute('aria-selected', selected ? 'true' : 'false');
   });
 
   closeSortMenu();
@@ -1080,7 +1276,78 @@ function closeSortMenu() {
   sortTrigger.setAttribute('aria-expanded', 'false');
 }
 
+function openSettingsModal() {
+  updateSettingsLangButtons();
+  loadSettingsAnalyticsToggle();
+  settingsModal.classList.remove('hidden');
+}
+
+async function loadSettingsAnalyticsToggle() {
+  const response = await chrome.runtime.sendMessage({ type: 'GET_SETTINGS' });
+  if (settingsAnalyticsToggle) {
+    settingsAnalyticsToggle.checked = response?.analyticsEnabled === true;
+  }
+}
+
+function closeSettingsModal() {
+  settingsModal.classList.add('hidden');
+}
+
+function updateSettingsLangButtons() {
+  const current = getLanguage();
+  settingsLangButtons.forEach((button) => {
+    button.classList.toggle('selected', button.dataset.lang === current);
+  });
+}
+
+async function applyLanguageChange(lang) {
+  if (!lang || lang === getLanguage()) {
+    updateSettingsLangButtons();
+    return;
+  }
+
+  await setLanguage(lang);
+  trackAnalytics('lc');
+  trackAnalytics('sc');
+  refreshAllTranslations();
+}
+
+function refreshAllTranslations() {
+  applyPageTranslations();
+
+  if (channel) {
+    pageTitle.textContent = tr('pageClipsNamed', { channel });
+    document.title = tr('pageTitleNamed', { channel });
+  }
+
+  if (!statusPanel.classList.contains('hidden') && channel) {
+    statusText.textContent = tr('loadingClipsChannel', { channel });
+    if (!statusSubtext.classList.contains('hidden')) {
+      statusSubtext.textContent = tr('loadingClipsHint');
+    }
+  }
+
+  if (state.broadcaster) {
+    updateBroadcasterInfo(state.allClips.length);
+  }
+
+  if (state.loading || state.loadCanResume) {
+    if (state.loadCanResume && !state.loading) {
+      loadingBannerText.textContent = tr('loadPaused', {
+        loaded: formatViews(state.allClips.length)
+      });
+    } else {
+      loadingBannerText.textContent = getLoadingBannerText();
+    }
+  }
+
+  if (!contentPanel.classList.contains('hidden')) {
+    renderTable();
+  }
+}
+
 function openChannelModal() {
+  hideChannelModalError();
   channelModalInput.value = channel;
   channelModal.classList.remove('hidden');
   channelModalInput.focus();
@@ -1089,6 +1356,7 @@ function openChannelModal() {
 
 function closeChannelModal() {
   channelModal.classList.add('hidden');
+  hideChannelModalError();
 }
 
 function showConfirmDialog(message, onConfirm, okLabel = tr('confirmStop')) {
@@ -1148,26 +1416,54 @@ async function downloadCurrentClip() {
   }
 }
 
-function filterChannelInputValue(value) {
-  return value.replace(CHANNEL_INPUT_PATTERN, '');
-}
-
 function sanitizeChannelInput(input) {
-  const filtered = filterChannelInputValue(input.value);
-  if (filtered !== input.value) {
-    input.value = filtered;
-  }
+  applyChannelInputSanitize(input);
 }
 
-function navigateToChannel(nextChannel) {
-  const normalized = normalizeChannel(nextChannel);
+function showChannelModalError(message) {
+  channelModalError.textContent = message;
+  channelModalError.classList.remove('hidden');
+}
+
+function hideChannelModalError() {
+  channelModalError.classList.add('hidden');
+  channelModalError.textContent = '';
+}
+
+async function submitChannelChange() {
+  hideChannelModalError();
+  const normalized = normalizeChannel(channelModalInput.value);
+
   if (!normalized) {
+    showChannelModalError(tr('channelRequired'));
+    channelModalInput.focus();
     return;
   }
 
-  window.location.href = chrome.runtime.getURL(
-    `pages/tracking.html?channel=${encodeURIComponent(normalized)}`
-  );
+  if (normalized === channel) {
+    closeChannelModal();
+    return;
+  }
+
+  channelModalSubmit.disabled = true;
+  showChannelModalError(tr('channelValidating'));
+
+  try {
+    const response = await checkChannelOnKick(normalized);
+
+    if (!response?.ok) {
+      showChannelModalError(response?.error || tr('channelNotFound', { channel: normalized }));
+      channelModalInput.focus();
+      return;
+    }
+
+    trackChannelAnalytics(normalized);
+    window.location.href = chrome.runtime.getURL(
+      `pages/tracking.html?channel=${encodeURIComponent(normalized)}`
+    );
+  } finally {
+    channelModalSubmit.disabled = false;
+  }
 }
 
 function destroyHlsPlayer() {
@@ -1468,7 +1764,66 @@ function closeClipModal() {
   }
 }
 
-async function loadClips(forceRefresh = false) {
+function handleClipLoadProgress(progress, context) {
+  if (progress.phase === 'partial' && !context.shownPartial) {
+    context.shownPartial = true;
+    scheduleTableUpdateDuringLoad(progress);
+    return;
+  }
+
+  if (progress.phase === 'full') {
+    scheduleTableUpdateDuringLoad(progress);
+    return;
+  }
+
+  if (progress.phase === 'cancelled') {
+    state.loadPaused = true;
+    clearLoadProgressTimers();
+
+    if (progress.clips) {
+      replaceAllClips(progress.clips);
+    }
+
+    state.clipsLoadedCount = state.allClips.length;
+    state.loadCanResume = Boolean(progress.hasMore && progress.nextCursor != null);
+    state.resumeCursor = state.loadCanResume ? progress.nextCursor : null;
+
+    if (state.loadCanResume) {
+      state.clipsTotalLocked = false;
+      const hint = state.broadcaster?.clipsCount;
+      const loaded = state.allClips.length;
+
+      if (hint && hint > loaded) {
+        state.clipsTotalExpected = Math.max(state.clipsTotalExpected || 0, hint);
+      } else {
+        state.clipsTotalExpected = Math.max(
+          state.clipsTotalExpected || 0,
+          loaded + CLIPS_PAGE_LIMIT
+        );
+      }
+    } else {
+      applyClipsTotalUpdate(
+        progress.totalCount,
+        progress.loaded ?? state.allClips.length,
+        false,
+        progress.pageSize
+      );
+    }
+
+    showContent();
+    updateBroadcasterInfo(state.allClips.length);
+
+    if (state.loadCanResume) {
+      showPausedLoadBanner();
+    } else {
+      hideLoadingBanner();
+    }
+
+    scheduleDeferredTableRefresh();
+  }
+}
+
+async function runClipLoad({ forceRefresh = false, resume = false } = {}) {
   if (!channel) {
     showError(tr('noChannelInUrl'));
     return;
@@ -1483,133 +1838,187 @@ async function loadClips(forceRefresh = false) {
   const loadSignal = state.loadAbortController.signal;
 
   state.loading = true;
-  state.clipsTotalExpected = null;
-  state.clipsTotalLocked = false;
-  state.clipsLoadedCount = 0;
-  showStatus(
-    tr('loadingClipsChannel', { channel }),
-    tr('loadingClipsHint')
-  );
-  pageTitle.textContent = tr('pageClipsNamed', { channel });
-  document.title = tr('pageTitleNamed', { channel });
-  hideLoadingBanner();
+  state.loadPaused = false;
+
+  if (!resume) {
+    state.loadCanResume = false;
+    state.resumeCursor = null;
+    state.clipsTotalExpected = null;
+    state.clipsTotalLocked = false;
+    state.clipsLoadedCount = 0;
+    showStatus(
+      tr('loadingClipsChannel', { channel }),
+      tr('loadingClipsHint')
+    );
+    pageTitle.textContent = tr('pageClipsNamed', { channel });
+    document.title = tr('pageTitleNamed', { channel });
+    hideLoadingBanner();
+  } else {
+    state.clipsTotalLocked = false;
+    const loaded = state.allClips.length;
+    const hint = state.broadcaster?.clipsCount;
+
+    if (hint && hint > loaded) {
+      state.clipsTotalExpected = Math.max(state.clipsTotalExpected || 0, hint);
+    }
+
+    showContent();
+    showActiveLoadBanner(getLoadingBannerText());
+  }
+
+  const loadContext = { shownPartial: resume && state.allClips.length > 0 };
+  const resumeKnownTotal = (() => {
+    const loaded = state.allClips.length;
+    const hint = state.broadcaster?.clipsCount;
+
+    if (hint && hint > loaded) {
+      return hint;
+    }
+
+    return null;
+  })();
+  const loadOptions = resume
+    ? {
+      initialClips: state.allClips,
+      startCursor: state.resumeCursor,
+      knownTotalCount: resumeKnownTotal
+    }
+    : {};
 
   try {
-    const cacheResponse = await chrome.runtime.sendMessage({
-      type: 'GET_CACHED_CLIPS',
-      channel,
-      forceRefresh
-    });
+    if (!resume) {
+      const cacheResponse = await chrome.runtime.sendMessage({
+        type: 'GET_CACHED_CLIPS',
+        channel,
+        forceRefresh
+      });
 
-    if (cacheResponse?.cached) {
-      state.allClips = cacheResponse.clips;
-      state.broadcaster = cacheResponse.broadcaster;
-      state.broadcasterUserId = cacheResponse.broadcaster?.userId || '';
-      setClipsTotalExpected(cacheResponse.total ?? cacheResponse.clips?.length ?? null, true);
-      state.currentPage = 1;
-      updateBroadcasterInfo(state.allClips.length);
-      showContent();
-      renderTable();
-      return;
-    }
-
-    const broadcasterResponse = await chrome.runtime.sendMessage({
-      type: 'GET_CHANNEL',
-      login: channel
-    });
-
-    if (!broadcasterResponse?.ok) {
-      throw new Error(broadcasterResponse?.error || tr('loadError'));
-    }
-
-    state.broadcaster = broadcasterResponse.broadcaster;
-    state.broadcasterUserId = broadcasterResponse.broadcaster.userId || '';
-    state.clipsTotalExpected = broadcasterResponse.broadcaster.clipsCount || null;
-    state.clipsTotalLocked = false;
-    state.allClips = [];
-    state.currentPage = 1;
-    showContent();
-    updateBroadcasterInfo(0);
-    updatePaginationControls(0, 1);
-    showLoadingBanner(getLoadingBannerText());
-
-    let shownPartial = false;
-
-    const clips = await loadAllClips(channel, fetchChannelClipsPage, (progress) => {
-      if (progress.phase === 'partial' && !shownPartial) {
-        shownPartial = true;
-        scheduleTableUpdateDuringLoad(progress);
-        return;
-      }
-
-      if (progress.phase === 'full') {
-        scheduleTableUpdateDuringLoad(progress);
-        return;
-      }
-
-      if (progress.phase === 'cancelled') {
-        if (progress.clips) {
-          state.allClips = progress.clips;
-        }
-        applyClipsTotalUpdate(
-          progress.totalCount,
-          progress.loaded ?? state.allClips.length,
-          false,
-          progress.pageSize
-        );
-        state.clipsTotalExpected = state.allClips.length;
-        hideLoadingBanner();
-        showContent();
+      if (cacheResponse?.cached) {
+        replaceAllClips(cacheResponse.clips);
+        state.broadcaster = cacheResponse.broadcaster;
+        state.broadcasterUserId = cacheResponse.broadcaster?.userId || '';
+        setClipsTotalExpected(cacheResponse.total ?? cacheResponse.clips?.length ?? null, true);
+        state.currentPage = 1;
         updateBroadcasterInfo(state.allClips.length);
+        showContent();
+        scheduleCreatorIndexRebuild();
         renderTable();
         return;
       }
 
-      if (progress.phase === 'quick') {
-        showStatus(tr('loadingClipsChannel', { channel }), tr('loadingClipsHint'));
-      }
-    }, loadSignal);
+      const broadcasterResponse = await chrome.runtime.sendMessage({
+        type: 'GET_CHANNEL',
+        login: channel
+      });
 
-    state.allClips = clips;
+      if (!broadcasterResponse?.ok) {
+        throw new Error(broadcasterResponse?.error || tr('loadError'));
+      }
+
+      state.broadcaster = broadcasterResponse.broadcaster;
+      state.broadcasterUserId = broadcasterResponse.broadcaster.userId || '';
+      state.clipsTotalExpected = broadcasterResponse.broadcaster.clipsCount || null;
+      state.clipsTotalLocked = false;
+      replaceAllClips([]);
+      state.currentPage = 1;
+      showContent();
+      updateBroadcasterInfo(0);
+      updatePaginationControls(0, 1);
+      showLoadingBanner(getLoadingBannerText());
+      loadContext.shownPartial = false;
+    }
+
+    const clips = await loadAllClips(
+      channel,
+      fetchChannelClipsPage,
+      (progress) => handleClipLoadProgress(progress, loadContext),
+      loadSignal,
+      loadOptions
+    );
+
+    if (loadSignal.aborted) {
+      return;
+    }
+
+    replaceAllClips(clips);
     state.clipsLoadedCount = clips.length;
     state.clipsTotalExpected = clips.length;
     state.clipsTotalLocked = true;
-    rebuildCreatorClipIndex();
+    state.loadCanResume = false;
+    state.resumeCursor = null;
+    scheduleCreatorIndexRebuild();
     updateBroadcasterInfo(clips.length);
 
-    if (!loadSignal.aborted) {
-      await chrome.runtime.sendMessage({
-        type: 'SAVE_CLIPS_CACHE',
-        channel,
-        payload: {
-          channel: normalizeChannel(channel),
-          broadcaster: state.broadcaster,
-          clips,
-          total: clips.length
-        }
-      });
-    }
+    await chrome.runtime.sendMessage({
+      type: 'SAVE_CLIPS_CACHE',
+      channel,
+      payload: {
+        channel: normalizeChannel(channel),
+        broadcaster: state.broadcaster,
+        clips,
+        total: clips.length
+      }
+    });
 
-    if (state.tableRenderTimer) {
-      clearTimeout(state.tableRenderTimer);
-      state.tableRenderTimer = null;
-    }
-
+    clearLoadProgressTimers();
     hideLoadingBanner();
     showContent();
     renderTable();
     prefetchAllCreatorProfiles();
   } catch (error) {
     if (loadSignal.aborted) {
-      hideLoadingBanner();
-      showContent();
-      renderTable();
       return;
     }
     showError(error.message || tr('loadError'));
   } finally {
     state.loading = false;
     state.loadAbortController = null;
+  }
+}
+
+async function loadClips(forceRefresh = false) {
+  await runClipLoad({ forceRefresh, resume: false });
+}
+
+function waitForLoadToFinish(timeoutMs = 90000) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+
+    (function poll() {
+      if (!state.loading) {
+        resolve();
+        return;
+      }
+
+      if (Date.now() - started > timeoutMs) {
+        state.loading = false;
+        resolve();
+        return;
+      }
+
+      setTimeout(poll, 50);
+    })();
+  });
+}
+
+async function resumeClipLoading() {
+  if (!state.loadCanResume || state.resumeCursor == null) {
+    return;
+  }
+
+  if (state.loading) {
+    state.loadAbortController?.abort();
+    await waitForLoadToFinish();
+  }
+
+  if (!state.loadCanResume || state.resumeCursor == null) {
+    return;
+  }
+
+  try {
+    await runClipLoad({ resume: true });
+  } catch (error) {
+    showError(error.message || tr('loadError'));
   }
 }
 
@@ -1620,7 +2029,11 @@ function cancelClipLoading() {
 
   showConfirmDialog(
     tr('cancelLoadConfirm'),
-    () => state.loadAbortController?.abort()
+    () => {
+      state.loadPaused = true;
+      clearLoadProgressTimers();
+      state.loadAbortController?.abort();
+    }
   );
 }
 
@@ -1735,28 +2148,76 @@ document.addEventListener('keydown', (event) => {
 
   closeConfirmDialog();
   closeSortMenu();
+  closeSettingsModal();
   closeChannelModal();
 });
 
 refreshBtn.addEventListener('click', () => {
+  trackAnalytics('rf');
   loadClips(true);
 });
 
-changeChannelBtn.addEventListener('click', openChannelModal);
+settingsBtn.addEventListener('click', openSettingsModal);
+settingsModalClose.addEventListener('click', closeSettingsModal);
+settingsModal.querySelector('[data-close-settings]').addEventListener('click', closeSettingsModal);
+
+if (settingsLearnMoreBtn) {
+  settingsLearnMoreBtn.addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('pages/transparency.html') });
+  });
+}
+
+if (settingsAnalyticsToggle) {
+  settingsAnalyticsToggle.addEventListener('change', async () => {
+    const enabled = settingsAnalyticsToggle.checked;
+    await chrome.runtime.sendMessage({
+      type: 'ANALYTICS_SET_ENABLED',
+      enabled
+    });
+    trackAnalytics('sc');
+  });
+}
+
+settingsChangeChannelBtn.addEventListener('click', () => {
+  closeSettingsModal();
+  openChannelModal();
+});
+
+settingsLangButtons.forEach((button) => {
+  button.addEventListener('click', () => {
+    applyLanguageChange(button.dataset.lang).catch(() => {});
+  });
+});
+
 channelModalCancel.addEventListener('click', closeChannelModal);
 channelModal.querySelector('[data-close-modal]').addEventListener('click', closeChannelModal);
 
 channelModalSubmit.addEventListener('click', () => {
-  navigateToChannel(channelModalInput.value);
+  submitChannelChange().catch(() => {});
+});
+
+channelModalInput.addEventListener('paste', (event) => {
+  const text = event.clipboardData?.getData('text') || '';
+
+  if (applyChannelPaste(channelModalInput, text)) {
+    event.preventDefault();
+    hideChannelModalError();
+  }
 });
 
 channelModalInput.addEventListener('input', () => {
   sanitizeChannelInput(channelModalInput);
+  hideChannelModalError();
+});
+
+channelModalInput.addEventListener('blur', () => {
+  finalizeChannelInput(channelModalInput);
 });
 
 channelModalInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
-    navigateToChannel(channelModalInput.value);
+    event.preventDefault();
+    submitChannelChange().catch(() => {});
   }
 });
 
@@ -1776,6 +2237,9 @@ clipQualitySelect.addEventListener('change', () => {
 });
 
 cancelLoadBtn.addEventListener('click', cancelClipLoading);
+resumeLoadBtn.addEventListener('click', () => {
+  resumeClipLoading();
+});
 
 confirmModalCancel.addEventListener('click', closeConfirmDialog);
 confirmModal.querySelector('[data-close-confirm]').addEventListener('click', closeConfirmDialog);
@@ -1801,14 +2265,25 @@ document.addEventListener('mousemove', handlePopoverDragMove);
 document.addEventListener('mouseup', handlePopoverDragEnd);
 
 function applyPageTranslations() {
-  document.documentElement.lang = 'en';
+  document.documentElement.lang = getLanguage();
   pageTitle.textContent = tr('pageClips');
-  changeChannelBtn.textContent = tr('changeChannel');
+  settingsBtn.textContent = tr('settings');
   refreshBtn.textContent = tr('refresh');
   statusText.textContent = tr('loadingClips');
   searchInput.placeholder = tr('searchPlaceholder');
   emptyState.textContent = tr('emptyClips');
   openSettingsBtn.textContent = tr('openKick');
+  document.getElementById('settings-modal-title').textContent = tr('settings');
+  document.getElementById('settings-language-label').textContent = tr('language');
+  document.getElementById('settings-analytics-label').textContent = tr('analyticsLabel');
+  if (settingsLearnMoreBtn) {
+    settingsLearnMoreBtn.textContent = tr('analyticsLearnMore');
+  }
+  document.getElementById('settings-transparency-link').textContent = tr('transparencyReport');
+  document.getElementById('settings-privacy-link').textContent = tr('privacyPolicy');
+  settingsChangeChannelBtn.textContent = tr('changeChannel');
+  settingsModalClose.textContent = tr('close');
+  updateSettingsLangButtons();
   document.getElementById('channel-modal-title').textContent = tr('changeChannelTitle');
   const channelModalLabel = document.getElementById('channel-modal-label');
   if (channelModalLabel) {
@@ -1826,6 +2301,7 @@ function applyPageTranslations() {
   userPopoverClose.setAttribute('aria-label', tr('close'));
   userPopoverHeader.title = tr('dragPopover');
   cancelLoadBtn.textContent = tr('cancel');
+  resumeLoadBtn.textContent = tr('resumeLoadClips');
   loadingBannerText.textContent = tr('loadingRest');
 
   prevButtons.forEach((button) => {
@@ -1844,14 +2320,37 @@ function applyPageTranslations() {
   });
 
   sortOptions.forEach((option) => {
-    option.textContent = tr(SORT_KEYS[option.dataset.value]);
+    const label = option.querySelector('.custom-select-option-label');
+    if (label) {
+      label.textContent = tr(SORT_KEYS[option.dataset.value]);
+    }
   });
   sortValue.textContent = tr(SORT_KEYS[state.sort]);
 }
 
 async function initPage() {
+  await loadLanguage();
   applyPageTranslations();
+  trackAnalytics('tp');
+  if (channel) {
+    trackChannelAnalytics(channel);
+  }
   await loadClips();
 }
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes.language) {
+    return;
+  }
+
+  const next = changes.language.newValue === 'ru' ? 'ru' : 'en';
+  if (next === getLanguage()) {
+    return;
+  }
+
+  loadLanguage().then(() => {
+    refreshAllTranslations();
+  }).catch(() => {});
+});
 
 initPage();

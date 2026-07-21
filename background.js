@@ -6,6 +6,15 @@ import {
   fetchUsersByLogins
 } from './lib/kick-api.js';
 import { getClipPlaybackSources, fetchUserVerified } from './lib/clip-player.js';
+import {
+  bootstrapAnalytics,
+  initAnalyticsAlarmsListener,
+  trackEvent,
+  trackChannelView,
+  handleAnalyticsOptIn,
+  sendInstallPing,
+  flushAnalytics
+} from './lib/analytics.js';
 
 const clipCache = new Map();
 const profileCache = new Map();
@@ -32,6 +41,22 @@ function getCachedProfile(key) {
 
   return profileCache.get(key) || null;
 }
+
+chrome.runtime.onInstalled.addListener((details) => {
+  if (details.reason === 'install') {
+    chrome.storage.local.set({
+      onboardingComplete: false,
+      analyticsEnabled: false
+    });
+
+    chrome.tabs.create({ url: chrome.runtime.getURL('pages/onboarding.html') });
+  }
+
+  bootstrapAnalytics().catch(() => {});
+});
+
+bootstrapAnalytics().catch(() => {});
+initAnalyticsAlarmsListener();
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'GET_CHANNEL') {
@@ -104,12 +129,41 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === 'GET_SETTINGS') {
-    chrome.storage.local.get(['lastChannel'], (data) => {
+    chrome.storage.local.get(['lastChannel', 'analyticsEnabled'], (data) => {
       sendResponse({
         ok: true,
-        lastChannel: data.lastChannel || ''
+        lastChannel: data.lastChannel || '',
+        analyticsEnabled: data.analyticsEnabled === true
       });
     });
+    return true;
+  }
+
+  if (message.type === 'ANALYTICS_TRACK') {
+    trackEvent(message.event, message.amount || 1)
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+
+  if (message.type === 'ANALYTICS_TRACK_CHANNEL') {
+    trackChannelView(message.channel)
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+
+  if (message.type === 'ANALYTICS_SET_ENABLED') {
+    handleAnalyticsOptIn(message.enabled === true, { fromOnboarding: message.fromOnboarding === true })
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+
+  if (message.type === 'ANALYTICS_FLUSH') {
+    flushAnalytics()
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
     return true;
   }
 

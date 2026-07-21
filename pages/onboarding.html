@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KickClips</title>
+  <link rel="stylesheet" href="onboarding.css">
+</head>
+<body>
+  <div class="onboarding-wrap">
+    <main class="onboarding-card">
+      <div class="onboarding-logo" aria-hidden="true">K</div>
+
+      <section id="step-setup">
+        <h1 id="welcome-title">Welcome to KickClips</h1>
+        <p id="welcome-subtitle" class="onboarding-subtitle"></p>
+
+        <label id="language-label" class="section-label">Language</label>
+        <div class="language-options">
+          <button type="button" class="lang-btn" data-lang="en" id="lang-en">EN</button>
+          <button type="button" class="lang-btn" data-lang="ru" id="lang-ru">RU</button>
+        </div>
+
+        <div class="analytics-box">
+          <p id="analytics-note" class="analytics-note"></p>
+          <div class="analytics-badges">
+            <span id="badge-anonymous" class="analytics-badge"></span>
+            <span id="badge-counters" class="analytics-badge"></span>
+            <span id="badge-consent" class="analytics-badge"></span>
+            <span id="badge-disable" class="analytics-badge"></span>
+          </div>
+          <div class="analytics-row">
+            <div class="analytics-row-text">
+              <strong id="analytics-label"></strong>
+              <button type="button" id="learn-more-btn" class="analytics-link"></button>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="analytics-toggle">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <button id="save-btn" class="btn btn-primary" type="button"></button>
+      </section>
+
+      <section id="step-channel" class="hidden">
+        <h1 id="channel-step-title">KickClips</h1>
+        <p id="channel-step-text"></p>
+        <label id="channel-label" class="section-label" for="channel-input"></label>
+        <input id="channel-input" type="text" autocomplete="off" spellcheck="false">
+        <p id="channel-error" class="error hidden"></p>
+        <button id="continue-btn" class="btn btn-primary" type="button"></button>
+      </section>
+    </main>
+  </div>
+
+  <script src="onboarding.js" type="module"></script>
+</body>
+</html>

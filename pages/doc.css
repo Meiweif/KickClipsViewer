@@ -1,0 +1,140 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 24px;
+  background: #0b0e0f;
+  color: #efeff1;
+  font-family: "Inter", "Segoe UI", Roboto, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.doc {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.doc-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.doc-header h1 {
+  margin: 0;
+  font-size: 24px;
+  color: #53FC18;
+}
+
+.doc-lang {
+  display: flex;
+  gap: 8px;
+}
+
+.lang-btn {
+  appearance: none;
+  border: 1px solid #3a3a3d;
+  border-radius: 6px;
+  background: #111214;
+  color: #efeff1;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.lang-btn.selected {
+  border-color: #53FC18;
+  box-shadow: 0 0 0 1px #53FC18;
+}
+
+.doc-nav {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.doc-nav a {
+  color: #53FC18;
+  text-decoration: none;
+}
+
+.doc-nav a:hover {
+  text-decoration: underline;
+}
+
+.doc h2 {
+  margin: 28px 0 10px;
+  font-size: 18px;
+  color: #efeff1;
+}
+
+.doc h3 {
+  margin: 18px 0 8px;
+  font-size: 15px;
+}
+
+.doc p,
+.doc li {
+  color: #c8c8d0;
+}
+
+.doc ul {
+  padding-left: 20px;
+}
+
+.doc pre {
+  background: #111214;
+  border: 1px solid #2f2f35;
+  border-radius: 8px;
+  padding: 14px;
+  overflow-x: auto;
+  font-size: 12px;
+  color: #d6ffe0;
+}
+
+.doc-card {
+  background: #111214;
+  border: 1px solid #2f2f35;
+  border-radius: 8px;
+  padding: 14px;
+  margin: 12px 0;
+}
+
+.doc-meta {
+  color: #adb1b8;
+  font-size: 12px;
+  margin-top: 32px;
+}
+
+.event-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+}
+
+.event-table th,
+.event-table td {
+  border: 1px solid #2f2f35;
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.event-table th {
+  background: #111214;
+  color: #adb1b8;
+}
+
+.event-key {
+  font-family: Consolas, monospace;
+  color: #53FC18;
+}

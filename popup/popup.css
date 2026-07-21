@@ -94,23 +94,23 @@ input:focus {
 
 .language-options {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   gap: 8px;
 }
 
 .lang-btn {
+  flex: 1;
   display: flex;
   align-items: center;
-  gap: 10px;
-  width: 100%;
+  justify-content: center;
   padding: 8px 10px;
   border: 1px solid #3a3a3d;
   border-radius: 6px;
   background: #111214;
   color: #efeff1;
   font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
-  text-align: left;
 }
 
 .lang-btn:hover {
@@ -121,11 +121,6 @@ input:focus {
 .lang-btn.selected {
   border-color: #53FC18;
   box-shadow: 0 0 0 1px #53FC18;
-}
-
-.lang-flag {
-  font-size: 18px;
-  line-height: 1;
 }
 
 .hint {

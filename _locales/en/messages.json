@@ -1,0 +1,11 @@
+{
+  "extName": {
+    "message": "Kick Clips Viewer"
+  },
+  "extDescription": {
+    "message": "Browse all clips from a Kick channel with pagination, sorting, search, and a built-in player."
+  },
+  "extActionTitle": {
+    "message": "Kick Clips Viewer"
+  }
+}
